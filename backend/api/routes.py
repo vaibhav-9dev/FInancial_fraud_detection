@@ -6,8 +6,8 @@ import uuid
 from datetime import datetime
 import numpy as np
 
-from ..database.database import get_db
-from ..database.models import (
+from database.database import get_db
+from database.models import (
     TransactionModel,
     FraudAlertModel,
     CustomerModel,
@@ -18,7 +18,7 @@ from ..database.models import (
     UserModel,
     SystemConfigModel,
 )
-from ..schemas.transaction import (
+from schemas.transaction import (
     TransactionCreate,
     TransactionBatchCreate,
     PredictionResponse,
@@ -29,7 +29,7 @@ from ..schemas.transaction import (
     CaseNoteCreateSchema,
     SystemHealthSchema,
 )
-from ..ml.feature_engineering import PaySimFeatureEngineer
+from ml.feature_engineering import PaySimFeatureEngineer
 
 router = APIRouter()
 
