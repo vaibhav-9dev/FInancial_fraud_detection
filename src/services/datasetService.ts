@@ -440,62 +440,49 @@ export class DatasetService {
     });
   }
 
-  /**
-   * Ingest dataset from any web URL or link (Kaggle dataset raw link, GitHub raw, S3, API)
-   */
+  /** Fetch remote CSV/JSON through the same-origin FastAPI proxy. */
   public async ingestFromUrl(url: string, customMapping?: Partial<ColumnMapping>): Promise<IngestedDataset> {
     const trimmedUrl = url.trim();
-    if (!trimmedUrl) {
-      throw new Error('Please enter a valid dataset URL.');
-    }
-
-    let textContent = '';
-    let datasetName = 'Remote Dataset';
-
+    if (!trimmedUrl) throw new Error('Please enter a valid dataset URL.');
+    let parsedUrl: URL;
     try {
-      const urlObj = new URL(trimmedUrl);
-      const pathname = urlObj.pathname;
-      const filename = pathname.split('/').filter(Boolean).pop();
-      if (filename) datasetName = filename;
-    } catch {
-      datasetName = 'URL Ingestion';
-    }
-
-    // Try direct fetch first, fallback to Vite /api/fetch-dataset proxy if CORS blocks it
+      parsedUrl = new URL(trimmedUrl);
+      if (!['http:', 'https:'].includes(parsedUrl.protocol)) throw new Error('Only HTTP and HTTPS URLs are supported.');
+    } catch (error) { throw new Error(error instanceof Error ? error.message : 'Invalid dataset URL.'); }
+    const filename = parsedUrl.pathname.split('/').filter(Boolean).pop();
+    const datasetName = filename ? decodeURIComponent(filename) : 'Remote Dataset';
+    const proxyUrl = `/api/fetch-dataset?url=${encodeURIComponent(trimmedUrl)}`;
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 50000);
+    let textContent: string;
     try {
-      const directResponse = await fetch(trimmedUrl, {
-        headers: { Accept: 'text/csv, application/json, text/plain, */*' },
-      });
-      if (directResponse.ok) {
-        textContent = await directResponse.text();
-      } else {
-        throw new Error(`Direct fetch status: ${directResponse.status}`);
+      const response = await fetch(proxyUrl, { method: 'GET', headers: { Accept: 'text/csv, application/json, text/plain' }, signal: controller.signal });
+      if (!response.ok) {
+        let message = `HTTP ${response.status}`;
+        try { const data = await response.json(); message = data.detail || data.error || message; }
+        catch { const body = await response.text().catch(() => ''); if (body) message = body.slice(0, 300); }
+        throw new Error(message);
       }
-    } catch {
-      // CORS or network failure: proxy via local server proxy
-      const proxyUrl = `/api/fetch-dataset?url=${encodeURIComponent(trimmedUrl)}`;
-      const proxyResponse = await fetch(proxyUrl);
-      if (!proxyResponse.ok) {
-        const errJson = await proxyResponse.json().catch(() => ({ error: 'Proxy fetch failed' }));
-        throw new Error(errJson.error || `Unable to fetch from ${trimmedUrl}. Status: ${proxyResponse.status}`);
+      textContent = await response.text();
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') throw new Error('Dataset download timed out. Try a smaller CSV file.');
+      throw new Error(`Dataset proxy failed: ${error instanceof Error ? error.message : 'Unknown network error'}`);
+    } finally { window.clearTimeout(timeoutId); }
+    const clean = textContent.replace(/^\uFEFF/, '').trim();
+    if (!clean) throw new Error('The remote dataset returned an empty response.');
+    const prefix = clean.slice(0, 100).toLowerCase();
+    if (prefix.startsWith('<!doctype html') || prefix.startsWith('<html')) throw new Error('URL returned an HTML webpage. Use a direct CSV or JSON download URL.');
+    const isJson = parsedUrl.pathname.toLowerCase().endsWith('.json') || clean.startsWith('[') || clean.startsWith('{');
+    try {
+      if (isJson) {
+        const { headers, rows } = this.parseJson(textContent);
+        if (!rows.length) throw new Error('JSON dataset contains no records.');
+        return this.processRawData(datasetName, headers, rows, 'URL_LINK', trimmedUrl, customMapping, new Blob([textContent]).size);
       }
-      textContent = await proxyResponse.text();
-    }
-
-    if (!textContent || !textContent.trim()) {
-      throw new Error('The URL returned an empty response.');
-    }
-
-    // Detect format
-    const isJson = trimmedUrl.endsWith('.json') || textContent.trim().startsWith('[') || textContent.trim().startsWith('{');
-
-    if (isJson) {
-      const { headers, rows } = this.parseJson(textContent);
-      return this.processRawData(datasetName, headers, rows, 'URL_LINK', trimmedUrl, customMapping, textContent.length);
-    } else {
       const { headers, rows } = this.parseCsv(textContent, 25000);
-      return this.processRawData(datasetName, headers, rows, 'URL_LINK', trimmedUrl, customMapping, textContent.length);
-    }
+      if (!headers.length || !rows.length) throw new Error('No CSV headers or transaction records were found.');
+      return this.processRawData(datasetName, headers, rows, 'URL_LINK', trimmedUrl, customMapping, new Blob([textContent]).size);
+    } catch (error) { throw new Error(`Dataset parsing failed: ${error instanceof Error ? error.message : 'Invalid dataset format.'}`); }
   }
 
   /**
