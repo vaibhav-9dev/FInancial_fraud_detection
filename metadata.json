@@ -1,0 +1,8 @@
+{
+  "name": "Remix FRAUDGUARD AI - Real-Time Payment Fraud Detection",
+  "description": "Production-grade real-time payment fraud detection system featuring dual ML engines (Isolation Forest \u0026 Gradient Boosting), high-precision latency telemetry, live streaming simulation, and alert triage.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,96 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: fraudguard-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: fraudguard_user
+      POSTGRES_PASSWORD: fraudguard_secure_password
+      POSTGRES_DB: fraudguard_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - fraudguard-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fraudguard_user -d fraudguard_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: fraudguard-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - fraudguard-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: fraudguard-kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - fraudguard-net
+
+  fastapi-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fraudguard-backend
+    restart: always
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://fraudguard_user:fraudguard_secure_password@postgres:5432/fraudguard_db
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: payment-transactions
+      KAFKA_DLQ_TOPIC: payment-transactions-dlq
+      JWT_SECRET: fraudguard_super_secure_jwt_secret_key_prod
+    volumes:
+      - ./backend:/app/backend
+    networks:
+      - fraudguard-net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: fraudguard-frontend
+    restart: always
+    ports:
+      - "3000:80"
+    depends_on:
+      - fastapi-backend
+    networks:
+      - fraudguard-net
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  fraudguard-net:
+    driver: bridge
