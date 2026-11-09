@@ -61,10 +61,10 @@ def validate_public_url(url: str):
             )
 
         if not parsed.hostname:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid dataset URL."
-            )
+            raise HTTPException(status_code=400, detail="Invalid dataset URL: hostname is missing.")
+
+        if parsed.port is not None and parsed.port not in (80, 443):
+            raise HTTPException(status_code=400, detail="Only standard HTTP and HTTPS ports are allowed.")
 
         if parsed.username or parsed.password:
             raise HTTPException(
@@ -87,9 +87,11 @@ def validate_public_url(url: str):
                 type=socket.SOCK_STREAM
             )
 
-            for address in addresses:
-                ip = ipaddress.ip_address(address[4][0])
+            if not addresses:
+                raise HTTPException(status_code=400, detail="Could not resolve the dataset hostname.")
 
+            for address in addresses:
+                ip = ipaddress.ip_address(address[4][0].split("%", 1)[0])
                 if not ip.is_global:
                     raise HTTPException(
                         status_code=400,
@@ -99,7 +101,7 @@ def validate_public_url(url: str):
         except socket.gaierror:
             raise HTTPException(
                 status_code=400,
-                detail="Could not resolve the dataset hostname."
+                detail="Could not resolve the dataset hostname. Check the URL or try a public raw-file link."
             )
 
         return parsed
@@ -162,15 +164,21 @@ async def fetch_dataset(url: str = Query(...)):
                     if response.status_code != 200:
                         raise HTTPException(
                             status_code=502,
-                            detail=(
-                                f"Dataset server returned HTTP "
-                                f"{response.status_code}."
-                            )
+                            detail=f"The remote dataset server returned HTTP {response.status_code}. "
+                                   "Check that the URL is a public direct-download link."
                         )
 
                     content_length = response.headers.get("content-length")
 
-                    if content_length and int(content_length) > MAX_DATASET_SIZE:
+                    if content_length:
+                        try:
+                            declared_size = int(content_length)
+                        except ValueError:
+                            declared_size = 0
+                    else:
+                        declared_size = 0
+
+                    if declared_size > MAX_DATASET_SIZE:
                         raise HTTPException(
                             status_code=413,
                             detail="Dataset exceeds the 20 MB download limit."
@@ -208,7 +216,7 @@ async def fetch_dataset(url: str = Query(...)):
                         )
 
                     if text_content.lstrip().lower().startswith(
-                        ("<!doctype html", "<html")
+                        ("<!doctype html", "<html", "<head", "<body")
                     ):
                         raise HTTPException(
                             status_code=422,
