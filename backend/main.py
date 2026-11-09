@@ -9,8 +9,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
-from .database.database import engine, Base
-from .api.routes import router
+from database.database import engine, Base
+from api.routes import router
 
 
 # Initialize database schemas
