@@ -444,34 +444,78 @@ export class DatasetService {
   public async ingestFromUrl(url: string, customMapping?: Partial<ColumnMapping>): Promise<IngestedDataset> {
     const trimmedUrl = url.trim();
     if (!trimmedUrl) throw new Error('Please enter a valid dataset URL.');
+
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(trimmedUrl);
-      if (!['http:', 'https:'].includes(parsedUrl.protocol)) throw new Error('Only HTTP and HTTPS URLs are supported.');
-    } catch (error) { throw new Error(error instanceof Error ? error.message : 'Invalid dataset URL.'); }
+      if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+        throw new Error('Only HTTP and HTTPS URLs are supported.');
+      }
+      if (parsedUrl.username || parsedUrl.password) {
+        throw new Error('Dataset URLs must not contain a username or password.');
+      }
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : 'Invalid dataset URL.');
+    }
+
     const filename = parsedUrl.pathname.split('/').filter(Boolean).pop();
-    const datasetName = filename ? decodeURIComponent(filename) : 'Remote Dataset';
+    let datasetName = 'Remote Dataset';
+    if (filename) {
+      try { datasetName = decodeURIComponent(filename); }
+      catch { datasetName = filename; }
+    }
+
     const proxyUrl = `/api/fetch-dataset?url=${encodeURIComponent(trimmedUrl)}`;
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 50000);
+    const timeoutId = window.setTimeout(() => controller.abort(), 55000);
     let textContent: string;
+
     try {
-      const response = await fetch(proxyUrl, { method: 'GET', headers: { Accept: 'text/csv, application/json, text/plain' }, signal: controller.signal });
+      const response = await fetch(proxyUrl, {
+        method: 'GET',
+        headers: { Accept: 'text/csv, application/json, text/plain' },
+        signal: controller.signal,
+      });
+
+      // Read the body exactly once. FastAPI normally returns { detail: ... } on errors.
+      const responseBody = await response.text();
       if (!response.ok) {
-        let message = `HTTP ${response.status}`;
-        try { const data = await response.json(); message = data.detail || data.error || message; }
-        catch { const body = await response.text().catch(() => ''); if (body) message = body.slice(0, 300); }
+        let message = `Dataset proxy returned HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}.`;
+        if (responseBody) {
+          try {
+            const data = JSON.parse(responseBody);
+            const detail = data?.detail ?? data?.error ?? data?.message;
+            message = typeof detail === 'string'
+              ? detail
+              : detail != null
+                ? JSON.stringify(detail)
+                : responseBody.slice(0, 500);
+          } catch {
+            message = responseBody.slice(0, 500);
+          }
+        }
         throw new Error(message);
       }
-      textContent = await response.text();
+      textContent = responseBody;
     } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') throw new Error('Dataset download timed out. Try a smaller CSV file.');
-      throw new Error(`Dataset proxy failed: ${error instanceof Error ? error.message : 'Unknown network error'}`);
-    } finally { window.clearTimeout(timeoutId); }
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error('Dataset download timed out. Try a smaller CSV file or a faster public mirror.');
+      }
+      if (error instanceof Error && error.message.startsWith('Dataset proxy returned')) {
+        throw error;
+      }
+      throw new Error(`Dataset proxy failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+
     const clean = textContent.replace(/^\uFEFF/, '').trim();
     if (!clean) throw new Error('The remote dataset returned an empty response.');
-    const prefix = clean.slice(0, 100).toLowerCase();
-    if (prefix.startsWith('<!doctype html') || prefix.startsWith('<html')) throw new Error('URL returned an HTML webpage. Use a direct CSV or JSON download URL.');
+    const prefix = clean.slice(0, 200).toLowerCase();
+    if (prefix.startsWith('<!doctype html') || prefix.startsWith('<html')) {
+      throw new Error('The URL returned an HTML webpage instead of CSV or JSON. Use a direct download URL.');
+    }
+
     const isJson = parsedUrl.pathname.toLowerCase().endsWith('.json') || clean.startsWith('[') || clean.startsWith('{');
     try {
       if (isJson) {
@@ -482,7 +526,9 @@ export class DatasetService {
       const { headers, rows } = this.parseCsv(textContent, 25000);
       if (!headers.length || !rows.length) throw new Error('No CSV headers or transaction records were found.');
       return this.processRawData(datasetName, headers, rows, 'URL_LINK', trimmedUrl, customMapping, new Blob([textContent]).size);
-    } catch (error) { throw new Error(`Dataset parsing failed: ${error instanceof Error ? error.message : 'Invalid dataset format.'}`); }
+    } catch (error) {
+      throw new Error(`Dataset parsing failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /**
